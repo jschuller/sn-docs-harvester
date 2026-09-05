@@ -1,0 +1,7 @@
+# harvested output — keep docs next to the project that uses them, not here
+*.md.tmp
+output/
+harvest.log
+__pycache__/
+*.pyc
+.DS_Store
