@@ -42,6 +42,10 @@ python3 scripts/harvest.py --map-id MAP_ID --subtree CONTENT_ID -o cmdb.md -v
 
 # Harvest a whole map
 python3 scripts/harvest.py --map-id MAP_ID -o platform.md -v
+
+# Another locale (default en-US; "all" disables), longer timeout for huge pages
+python3 scripts/harvest.py --search "Fluent API" --list --lang ja-JP
+python3 scripts/harvest.py --map-id MAP_ID --subtree CONTENT_ID -o cicd.md --timeout 180
 ```
 
 Verified map and subtree IDs are in [`references/known-maps.md`](references/known-maps.md);
@@ -52,6 +56,8 @@ The skill definition Claude reads is [`SKILL.md`](SKILL.md).
 
 - Requests are throttled (250 ms between topic fetches). Be considerate: harvest subtrees, not the whole catalog.
 - The API path is `/docs/api/khub/` — `/api/khub/` returns 403.
+- Every map exists in six locales, and non-English maps often keep English titles. Search keeps only `--lang`
+  (default `en-US`) maps; an explicit `--map-id` in another locale triggers a warning.
 - Content is © ServiceNow; this tool only automates reading publicly served documentation for personal reference.
 
 ## License

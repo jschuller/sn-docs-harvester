@@ -49,7 +49,18 @@ python3 scripts/harvest.py --map-id MAP_ID --subtree CONTENT_ID -o output.md -v
 
 # Show TOC tree
 python3 scripts/harvest.py --map-id MAP_ID --show-toc
+
+# Other locales (default en-US; "all" disables the filter)
+python3 scripts/harvest.py --search "Fluent API" --list --lang ja-JP
+
+# Large single-page topics (e.g. CICD API): raise the 30 s request timeout
+python3 scripts/harvest.py --map-id MAP_ID --subtree CONTENT_ID -o cicd.md --timeout 180
 ```
+
+> **Locale pitfall:** every map exists in six locales (en-US, fr-FR, de-DE, ja-JP,
+> ko-KR, pt-BR), and non-English maps often keep English titles. Search is filtered
+> to `--lang`; prefer explicit en-US `--map-id` values from `references/known-maps.md`.
+> The script warns on stderr if a `--map-id` is in another locale.
 
 ## Known Maps
 
@@ -62,3 +73,5 @@ See `references/known-maps.md` for verified mapIds and subtree contentIds.
 | 403 | Wrong path `/api/khub/` | Use `/docs/api/khub/` |
 | 404 on search | Search is POST | POST to `/docs/api/khub/clustered-search` |
 | Blocked in claude.ai | Domain not in proxy | Add `www.servicenow.com` |
+| Output in French/Japanese/... | Non-en-US map (English title) | Use `--lang en-US` (default) or an en-US mapId |
+| Timeout on one big topic | 30 s default | `--timeout 180` |

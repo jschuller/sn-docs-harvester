@@ -13,6 +13,8 @@ Usage:
     python3 harvest.py --search "CICD API" -o cicd-api.md -v
     python3 harvest.py --map-id q4dSP2Icgr1SFv5wanVXvQ -o platform.md -v
     python3 harvest.py --map-id MAP --subtree CONTENT_ID -o cmdb.md -v
+    python3 harvest.py --search "Fluent API" --list --lang ja-JP   # default en-US; "all" disables
+    python3 harvest.py --map-id MAP --subtree BIG_PAGE -o big.md --timeout 120
 """
 import argparse, json, re, sys, time, urllib.error, urllib.request
 from datetime import datetime
@@ -25,6 +27,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
 DELAY = 0.25
+TIMEOUT = 30  # seconds per request; --timeout overrides for large single-page topics
 
 try:
     import html2text as _h2t
@@ -44,33 +47,52 @@ except ImportError:
 
 def _get(url):
     req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8", errors="replace"))
 
 def _post(url, data):
     body = json.dumps(data).encode("utf-8")
     req = urllib.request.Request(url, data=body, headers=HEADERS, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8", errors="replace"))
 
 def _html(url):
     req = urllib.request.Request(url, headers={"Accept":"*/*","User-Agent":HEADERS["User-Agent"]})
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return r.read().decode("utf-8", errors="replace")
 
-def search(query, limit=30):
+_map_lang = {}  # mapId -> locale, e.g. "en-US"
+
+def map_lang(map_id):
+    """Locale of a map, from its metadata (fetched once per mapId)."""
+    if map_id not in _map_lang:
+        try: _map_lang[map_id] = _get(f"{API_BASE}/maps/{map_id}").get("lang", "")
+        except Exception: _map_lang[map_id] = ""
+    return _map_lang[map_id]
+
+def search(query, limit=30, lang="en-US"):
+    """Search topics. Every map exists in several locales, often with English titles,
+    so results are filtered to maps in `lang` ("all" or "" disables the filter)."""
     data = _post(f"{API_BASE}/clustered-search", {"query": query})
+    want = "" if lang in ("", "all") else lang.lower()
     entries = []
     for cluster in data.get("results", []):
         for entry in cluster.get("entries", []):
             topic = entry.get("topic", {})
             if topic and topic.get("mapId"):
+                mid = topic["mapId"]
+                if mid not in _map_lang:  # topic metadata usually carries ft:locale; saves a request
+                    md = {m.get("key"): m.get("values", []) for m in topic.get("metadata", [])}
+                    if md.get("ft:locale"): _map_lang[mid] = md["ft:locale"][0]
+                if want and map_lang(mid).lower() != want: continue
                 entries.append({
-                    "mapId": topic["mapId"], "contentId": topic.get("contentId",""),
+                    "mapId": mid, "contentId": topic.get("contentId",""),
                     "title": topic.get("title",""), "mapTitle": topic.get("mapTitle",""),
+                    "lang": map_lang(mid),
                     "excerpt": re.sub(r"<[^>]+>","",topic.get("htmlExcerpt","")),
                 })
             if len(entries) >= limit: break
+        if len(entries) >= limit: break
     return entries
 
 def fetch_toc(map_id):
@@ -139,19 +161,22 @@ def main():
     p.add_argument("--output", "-o", help="Output file"); p.add_argument("--verbose", "-v", action="store_true")
     p.add_argument("--list", action="store_true"); p.add_argument("--show-toc", action="store_true")
     p.add_argument("--limit", type=int, default=30)
+    p.add_argument("--lang", default="en-US", help='Map locale to keep (default en-US; "all" for every locale)')
+    p.add_argument("--timeout", type=float, default=30, help="Per-request timeout in seconds (default 30)")
     args = p.parse_args()
+    global TIMEOUT; TIMEOUT = args.timeout
     if args.search:
-        results = search(args.search, limit=args.limit)
-        if not results: print(f"No results for: {args.search}"); sys.exit(1)
+        results = search(args.search, limit=args.limit, lang=args.lang)
+        if not results: print(f"No results for: {args.search} (lang {args.lang})"); sys.exit(1)
         maps = {}
         for r in results:
             mid = r["mapId"]
-            if mid not in maps: maps[mid] = {"mapTitle": r["mapTitle"], "topics": []}
+            if mid not in maps: maps[mid] = {"mapTitle": r["mapTitle"], "lang": r["lang"], "topics": []}
             maps[mid]["topics"].append(r["title"])
         if args.list or not args.output:
-            print(f"Search results for '{args.search}':\n")
+            print(f"Search results for '{args.search}' (lang {args.lang}):\n")
             for i, (mid, info) in enumerate(maps.items()):
-                print(f"  [{i}] {info['mapTitle']} (mapId: {mid})")
+                print(f"  [{i}] {info['mapTitle']} [{info['lang'] or '?'}] (mapId: {mid})")
                 for t in info["topics"][:3]: print(f"      - {t}")
                 if len(info["topics"]) > 3: print(f"      ... +{len(info['topics'])-3} more")
             if not args.output: print(f"\nTo download, add: --output <filename.md>")
@@ -160,6 +185,9 @@ def main():
         if args.verbose: print(f"Using map: {maps[first_map_id]['mapTitle']} ({first_map_id})")
         harvest(first_map_id, args.output, subtree_id=args.subtree, verbose=args.verbose)
     elif args.map_id:
+        lang = map_lang(args.map_id)
+        if args.lang not in ("", "all") and lang and lang.lower() != args.lang.lower():
+            print(f"WARNING: map {args.map_id} is {lang}, not {args.lang}; proceeding", file=sys.stderr)
         if args.show_toc:
             toc = fetch_toc(args.map_id)
             tree = [find_subtree(toc, args.subtree)] if args.subtree else toc
