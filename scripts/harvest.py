@@ -17,8 +17,10 @@ Usage:
     python3 harvest.py --map-id MAP --subtree BIG_PAGE -o big.md --timeout 120
 """
 import argparse, json, re, sys, time, urllib.error, urllib.request
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
 
 API_BASE = "https://www.servicenow.com/docs/api/khub"
 HEADERS = {
@@ -28,6 +30,8 @@ HEADERS = {
 }
 DELAY = 0.25
 TIMEOUT = 30  # seconds per request; --timeout overrides for large single-page topics
+RETRY_DELAYS = (1, 2, 4)  # backoff in seconds before each retry of a 429, 5xx or network failure
+MAX_RETRY_AFTER = 60  # cap on a server-sent Retry-After, in seconds
 
 try:
     import html2text as _h2t
@@ -60,6 +64,27 @@ def _html(url):
     req = urllib.request.Request(url, headers={"Accept":"*/*","User-Agent":HEADERS["User-Agent"]})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return r.read().decode("utf-8", errors="replace")
+
+T = TypeVar("T")
+
+def _retry_after(e: urllib.error.HTTPError) -> float | None:
+    """Seconds from a Retry-After header (delta-seconds form only), capped at MAX_RETRY_AFTER."""
+    value = e.headers.get("Retry-After") if e.headers else None
+    try: return min(float(value), MAX_RETRY_AFTER) if value else None
+    except ValueError: return None
+
+def _retry(fetch: Callable[[], T]) -> T:
+    """Call fetch(), retrying 429, 5xx, network errors and timeouts after each of RETRY_DELAYS
+    (or the server's Retry-After); the last failure, or any other HTTP error, is raised."""
+    for delay in RETRY_DELAYS:
+        try: return fetch()
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500: raise
+            wait = _retry_after(e) or delay
+        except (urllib.error.URLError, TimeoutError):
+            wait = delay
+        time.sleep(wait)
+    return fetch()
 
 _map_lang = {}  # mapId -> locale, e.g. "en-US"
 
@@ -96,7 +121,7 @@ def search(query, limit=30, lang="en-US"):
     return entries
 
 def fetch_toc(map_id):
-    return _get(f"{API_BASE}/maps/{map_id}/pages").get("paginatedToc", [])
+    return _retry(lambda: _get(f"{API_BASE}/maps/{map_id}/pages")).get("paginatedToc", [])
 
 def walk_toc(pages, depth=0):
     for page in pages:
@@ -112,6 +137,8 @@ def find_subtree(pages, target_id):
     return None
 
 def harvest(map_id, output_path, subtree_id=None, verbose=False):
+    """Write the map (or subtree) to output_path; returns the number of topics that failed.
+    Each failure is logged to stderr and left as a <!-- missing: ... --> marker in the output."""
     try:
         meta = _get(f"{API_BASE}/maps/{map_id}")
         map_title = meta.get("title", "ServiceNow Documentation")
@@ -135,12 +162,17 @@ def harvest(map_id, output_path, subtree_id=None, verbose=False):
     fetched = skipped = errors = 0; t0 = time.time()
     for cid, title, depth in topics:
         time.sleep(DELAY)
-        try: html = _html(f"{API_BASE}/maps/{map_id}/topics/{cid}/content")
-        except urllib.error.HTTPError: skipped += 1; continue
-        except Exception as e:
-            errors += 1
-            if verbose and errors <= 3: print(f"  ERR: {title}: {e}")
-            continue
+        url = f"{API_BASE}/maps/{map_id}/topics/{cid}/content"
+        try: html = _retry(lambda: _html(url))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                skipped += 1; print(f"  SKIPPED (404): {cid} {title}", file=sys.stderr); continue
+            failure = f"HTTP {e.code}"
+        except Exception as e: failure = str(e) or type(e).__name__
+        else: failure = None
+        if failure:
+            errors += 1; print(f"  ERROR: {cid} {title}: {failure}", file=sys.stderr)
+            lines.append(f"\n<!-- missing: {cid} {re.sub(r'-{2,}', '-', title)} -->\n"); continue
         if not html or len(html.strip()) < 50: skipped += 1; continue
         md = html_to_md(html)
         heading = "#" * min(depth + 2, 6)
@@ -155,7 +187,8 @@ def harvest(map_id, output_path, subtree_id=None, verbose=False):
     sz = out.stat().st_size / 1024; elapsed = time.time() - t0
     print(f"\nDone: {fetched} fetched, {skipped} skipped, {errors} errors ({elapsed:.0f}s)")
     print(f"Output: {output_path} ({sz:.0f}K)")
-    return fetched
+    if errors: print(f"ERROR: {errors} topics failed (listed above); output has <!-- missing --> markers", file=sys.stderr)
+    return errors
 
 def main():
     p = argparse.ArgumentParser(description="Harvest ServiceNow docs from /docs/api/khub/")
@@ -189,7 +222,7 @@ def main():
         subtree_id = args.subtree or results[0]["contentId"]
         if not subtree_id: p.error("top search result has no contentId; pass --map-id with --subtree")
         if args.verbose: print(f"Using map: {maps[first_map_id]['mapTitle']} ({first_map_id})")
-        harvest(first_map_id, args.output, subtree_id=subtree_id, verbose=args.verbose)
+        if harvest(first_map_id, args.output, subtree_id=subtree_id, verbose=args.verbose): sys.exit(1)
     elif args.map_id:
         lang = map_lang(args.map_id)
         if args.lang not in ("", "all") and lang and lang.lower() != args.lang.lower():
@@ -201,7 +234,7 @@ def main():
                 print(f"{'  '*depth}{title} ({cid})")
             return
         if not args.output: p.error("--output required with --map-id")
-        harvest(args.map_id, args.output, subtree_id=args.subtree, verbose=args.verbose)
+        if harvest(args.map_id, args.output, subtree_id=args.subtree, verbose=args.verbose): sys.exit(1)
     else: p.error("Either --search or --map-id is required")
 
 if __name__ == "__main__": main()

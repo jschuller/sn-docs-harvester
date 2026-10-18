@@ -59,6 +59,9 @@ The skill definition Claude reads is [`SKILL.md`](SKILL.md).
 ## Notes
 
 - Requests are throttled (250 ms between topic fetches). Be considerate: harvest subtrees, not the whole catalog.
+- 429, 5xx and network failures are retried after 1, 2 and 4 s (or the server's `Retry-After`). A topic that
+  still fails is listed on stderr and left as a `<!-- missing: CONTENT_ID TITLE -->` line in the output, and the run
+  exits 1; a 404 is logged and skipped.
 - The API path is `/docs/api/khub/` — `/api/khub/` returns 403.
 - Every map exists in six locales, and non-English maps often keep English titles. Search keeps only `--lang`
   (default `en-US`) maps; an explicit `--map-id` in another locale triggers a warning.
