@@ -34,6 +34,10 @@ to the proxy allowed domains.
 # Find maps
 python3 scripts/harvest.py --search "CMDB health" --list
 
+# Harvest the top search hit's topic and its children (not its whole map);
+# --subtree overrides, and must be in the top hit's map
+python3 scripts/harvest.py --search "CICD API" -o cicd-api.md -v
+
 # Show a map's TOC
 python3 scripts/harvest.py --map-id MAP_ID --show-toc
 

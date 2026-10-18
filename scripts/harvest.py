@@ -10,7 +10,7 @@ Optional: pip install html2text for better markdown conversion.
 
 Usage:
     python3 harvest.py --search "CMDB health" --list
-    python3 harvest.py --search "CICD API" -o cicd-api.md -v
+    python3 harvest.py --search "CICD API" -o cicd-api.md -v   # top hit's topic and its children
     python3 harvest.py --map-id q4dSP2Icgr1SFv5wanVXvQ -o platform.md -v
     python3 harvest.py --map-id MAP --subtree CONTENT_ID -o cmdb.md -v
     python3 harvest.py --search "Fluent API" --list --lang ja-JP   # default en-US; "all" disables
@@ -121,7 +121,10 @@ def harvest(map_id, output_path, subtree_id=None, verbose=False):
     toc = fetch_toc(map_id)
     if subtree_id:
         node = find_subtree(toc, subtree_id)
-        if not node: print(f"ERROR: subtree {subtree_id} not found"); sys.exit(1)
+        if not node:
+            print(f"ERROR: subtree {subtree_id} not found in map {map_id}; list its contentIds with "
+                  f"--map-id {map_id} --show-toc and pass one as --subtree", file=sys.stderr)
+            sys.exit(1)
         topics = list(walk_toc([node]))
         map_title = node.get("title", map_title)
         if verbose: print(f"Subtree: {map_title}")
@@ -181,9 +184,12 @@ def main():
                 if len(info["topics"]) > 3: print(f"      ... +{len(info['topics'])-3} more")
             if not args.output: print(f"\nTo download, add: --output <filename.md>")
             return
-        first_map_id = list(maps.keys())[0]
+        first_map_id = results[0]["mapId"]  # maps keeps result order, so this is the top hit's map
+        # Harvest the top hit's topic and its children, not the whole map that contains it
+        subtree_id = args.subtree or results[0]["contentId"]
+        if not subtree_id: p.error("top search result has no contentId; pass --map-id with --subtree")
         if args.verbose: print(f"Using map: {maps[first_map_id]['mapTitle']} ({first_map_id})")
-        harvest(first_map_id, args.output, subtree_id=args.subtree, verbose=args.verbose)
+        harvest(first_map_id, args.output, subtree_id=subtree_id, verbose=args.verbose)
     elif args.map_id:
         lang = map_lang(args.map_id)
         if args.lang not in ("", "all") and lang and lang.lower() != args.lang.lower():
