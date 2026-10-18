@@ -32,6 +32,7 @@ DELAY = 0.25
 TIMEOUT = 30  # seconds per request; --timeout overrides for large single-page topics
 RETRY_DELAYS = (1, 2, 4)  # backoff in seconds before each retry of a 429, 5xx or network failure
 MAX_RETRY_AFTER = 60  # cap on a server-sent Retry-After, in seconds
+MAX_CONSECUTIVE_FAILURES = 5  # give up on a harvest after this many failed topics in a row
 
 try:
     import html2text as _h2t
@@ -142,9 +143,14 @@ def find_subtree(pages, target_id):
         if found: return found
     return None
 
+def _missing_marker(cid: str, title: str) -> str:
+    """An output line recording a topic that could not be fetched ("--" cannot appear in a comment)."""
+    return f"\n<!-- missing: {cid} {re.sub(r'-{2,}', '-', title)} -->\n"
+
 def harvest(map_id, output_path, subtree_id=None, verbose=False):
     """Write the map (or subtree) to output_path; returns the number of topics that failed.
-    Each failure is logged to stderr and left as a <!-- missing: ... --> marker in the output."""
+    Each failure is logged to stderr and left as a <!-- missing: ... --> marker in the output.
+    After MAX_CONSECUTIVE_FAILURES failed topics in a row the rest are not attempted, only marked."""
     try:
         meta = _get(f"{API_BASE}/maps/{map_id}")
         map_title = meta.get("title", "ServiceNow Documentation")
@@ -165,20 +171,28 @@ def harvest(map_id, output_path, subtree_id=None, verbose=False):
         topics = list(walk_toc(toc))
     if verbose: print(f"Topics: {len(topics)} (est. {len(topics)*DELAY/60:.1f} min)")
     lines = [f"<!-- Source: servicenow.com/docs | Map: {map_id} | Harvested: {datetime.now().strftime('%Y-%m-%d')} -->", f"# {map_title}\n"]
-    fetched = skipped = errors = 0; t0 = time.time()
-    for cid, title, depth in topics:
+    fetched = skipped = errors = streak = 0; not_tried = []; t0 = time.time()
+    for i, (cid, title, depth) in enumerate(topics):
         time.sleep(DELAY)
         url = f"{API_BASE}/maps/{map_id}/topics/{cid}/content"
         try: html = _retry(lambda: _html(url))
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                skipped += 1; print(f"  SKIPPED (404): {cid} {title}", file=sys.stderr); continue
+                skipped += 1; streak = 0; print(f"  SKIPPED (404): {cid} {title}", file=sys.stderr); continue
             failure = f"HTTP {e.code}"
         except Exception as e: failure = str(e) or type(e).__name__
         else: failure = None
         if failure:
-            errors += 1; print(f"  ERROR: {cid} {title}: {failure}", file=sys.stderr)
-            lines.append(f"\n<!-- missing: {cid} {re.sub(r'-{2,}', '-', title)} -->\n"); continue
+            errors += 1; streak += 1; print(f"  ERROR: {cid} {title}: {failure}", file=sys.stderr)
+            lines.append(_missing_marker(cid, title))
+            if streak >= MAX_CONSECUTIVE_FAILURES:
+                not_tried = topics[i + 1:]
+                print(f"ERROR: {streak} topics in a row failed; giving up on the remaining {len(not_tried)} "
+                      "(marked missing in the output)", file=sys.stderr)
+                lines.extend(_missing_marker(c, t) for c, t, _ in not_tried)
+                break
+            continue
+        streak = 0
         if not html or len(html.strip()) < 50: skipped += 1; continue
         md = html_to_md(html)
         heading = "#" * min(depth + 2, 6)
@@ -191,10 +205,12 @@ def harvest(map_id, output_path, subtree_id=None, verbose=False):
     out = Path(output_path); out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines), encoding="utf-8")
     sz = out.stat().st_size / 1024; elapsed = time.time() - t0
-    print(f"\nDone: {fetched} fetched, {skipped} skipped, {errors} errors ({elapsed:.0f}s)")
+    untried = f", {len(not_tried)} not attempted" if not_tried else ""
+    print(f"\nDone: {fetched} fetched, {skipped} skipped, {errors} errors{untried} ({elapsed:.0f}s)")
     print(f"Output: {output_path} ({sz:.0f}K)")
-    if errors: print(f"ERROR: {errors} topics failed (listed above); output has <!-- missing --> markers", file=sys.stderr)
-    return errors
+    missing = errors + len(not_tried)
+    if missing: print(f"ERROR: {missing} topics missing (see above); output has <!-- missing --> markers", file=sys.stderr)
+    return missing
 
 def main():
     p = argparse.ArgumentParser(description="Harvest ServiceNow docs from /docs/api/khub/")

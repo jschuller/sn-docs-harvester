@@ -272,6 +272,58 @@ def test_retry_covers_dropped_connections(error: Exception, sleeps: list[float])
     assert sleeps == [1, 2, 4]
 
 
+def flat_toc(count: int) -> list[dict[str, Any]]:
+    return [{"contentId": f"t{i}", "title": f"Topic {i}"} for i in range(count)]
+
+
+def test_harvest_gives_up_after_consecutive_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    sleeps: list[float],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+
+    def down(url: str) -> str:
+        calls.append(url)
+        raise http_error(503)
+
+    monkeypatch.setattr(harvest, "fetch_toc", lambda map_id: flat_toc(8))
+    monkeypatch.setattr(harvest, "_html", down)
+    out = tmp_path / "out.md"
+    assert harvest.harvest(MAP_ID, str(out)) == 8
+    limit = harvest.MAX_CONSECUTIVE_FAILURES
+    assert len(calls) == limit * (len(harvest.RETRY_DELAYS) + 1)  # topics after the limit are not fetched
+    text = out.read_text()
+    assert all(f"<!-- missing: t{i} Topic {i} -->" in text for i in range(8))
+    err = capsys.readouterr().err
+    assert f"giving up on the remaining {8 - limit}" in err
+    assert "8 topics missing" in err
+
+
+def test_success_resets_the_consecutive_failure_count(
+    monkeypatch: pytest.MonkeyPatch,
+    sleeps: list[float],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    limit = harvest.MAX_CONSECUTIVE_FAILURES
+    ok = f"t{limit - 1}"  # one success just before the limit is reached
+    count = 2 * limit - 1
+
+    def flaky(url: str) -> str:
+        cid = url.rsplit("/topics/", 1)[1].split("/", 1)[0]
+        if cid == ok:
+            return page(cid)
+        raise http_error(500)
+
+    monkeypatch.setattr(harvest, "fetch_toc", lambda map_id: flat_toc(count))
+    monkeypatch.setattr(harvest, "_html", flaky)
+    out = tmp_path / "out.md"
+    assert harvest.harvest(MAP_ID, str(out)) == count - 1  # every topic tried; none given up on
+    assert "giving up" not in capsys.readouterr().err
+
+
 def test_harvest_recovers_from_transient_503(
     monkeypatch: pytest.MonkeyPatch, sleeps: list[float], tmp_path: Path
 ) -> None:
