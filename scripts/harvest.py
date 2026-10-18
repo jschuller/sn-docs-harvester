@@ -16,7 +16,7 @@ Usage:
     python3 harvest.py --search "Fluent API" --list --lang ja-JP   # default en-US; "all" disables
     python3 harvest.py --map-id MAP --subtree BIG_PAGE -o big.md --timeout 120
 """
-import argparse, json, re, sys, time, urllib.error, urllib.request
+import argparse, http.client, json, math, re, sys, time, urllib.error, urllib.request
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -70,18 +70,24 @@ T = TypeVar("T")
 def _retry_after(e: urllib.error.HTTPError) -> float | None:
     """Seconds from a Retry-After header (delta-seconds form only), capped at MAX_RETRY_AFTER."""
     value = e.headers.get("Retry-After") if e.headers else None
-    try: return min(float(value), MAX_RETRY_AFTER) if value else None
+    try: seconds = float(value) if value else None
     except ValueError: return None
+    if seconds is None or not math.isfinite(seconds): return None
+    return min(max(0.0, seconds), MAX_RETRY_AFTER)
 
 def _retry(fetch: Callable[[], T]) -> T:
     """Call fetch(), retrying 429, 5xx, network errors and timeouts after each of RETRY_DELAYS
-    (or the server's Retry-After); the last failure, or any other HTTP error, is raised."""
+    (or the server's Retry-After); the last failure, or any other HTTP error, is raised.
+    Only for idempotent GETs: a request may be sent again after the server got it."""
     for delay in RETRY_DELAYS:
         try: return fetch()
         except urllib.error.HTTPError as e:
             if e.code != 429 and e.code < 500: raise
-            wait = _retry_after(e) or delay
-        except (urllib.error.URLError, TimeoutError):
+            retry_after = _retry_after(e)
+            wait = delay if retry_after is None else retry_after
+        # OSError covers URLError, timeouts and connection resets; HTTPException covers
+        # RemoteDisconnected and IncompleteRead
+        except (OSError, http.client.HTTPException):
             wait = delay
         time.sleep(wait)
     return fetch()

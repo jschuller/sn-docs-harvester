@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import email.message
+import http.client
 import importlib.util
+import math
 import sys
 import urllib.error
 from collections.abc import Callable
@@ -82,9 +84,15 @@ def search_hit(map_id: str, content_id: str, title: str) -> dict[str, Any]:
 def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     """Isolate module state and record time.sleep calls instead of sleeping."""
     calls: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        if seconds < 0 or math.isnan(seconds):  # as time.sleep does
+            raise ValueError("sleep length must be non-negative")
+        calls.append(seconds)
+
     monkeypatch.setattr(harvest, "DELAY", 0)
     monkeypatch.setattr(harvest, "_map_lang", {})
-    monkeypatch.setattr(harvest.time, "sleep", calls.append)
+    monkeypatch.setattr(harvest.time, "sleep", fake_sleep)
     monkeypatch.setattr(harvest, "_get", fake_get)
     monkeypatch.setattr(
         harvest,
@@ -216,6 +224,52 @@ def test_retry_covers_timeouts_and_url_errors(sleeps: list[float]) -> None:
 
     assert harvest._retry(fetch) == "ok"
     assert sleeps == [1, 2]
+
+
+def failing_then(errors: list[Exception], result: str = "ok") -> Callable[[], str]:
+    """A fetch that raises each of errors in turn, then returns result."""
+    pending = list(errors)
+
+    def fetch() -> str:
+        if pending:
+            raise pending.pop(0)
+        return result
+
+    return fetch
+
+
+def test_retry_after_negative_nan_or_date_never_crashes_sleep(sleeps: list[float]) -> None:
+    errors: list[Exception] = [
+        http_error(429, retry_after="-5"),
+        http_error(503, retry_after="nan"),
+        http_error(503, retry_after="Wed, 21 Oct 2026 07:28:00 GMT"),
+    ]
+    assert harvest._retry(failing_then(errors)) == "ok"
+    assert sleeps == [0, 2, 4]  # negative clamped to 0; NaN and dates fall back to backoff
+
+
+def test_retry_after_is_capped(sleeps: list[float]) -> None:
+    assert harvest._retry(failing_then([http_error(429, retry_after="999")])) == "ok"
+    assert sleeps == [harvest.MAX_RETRY_AFTER]
+
+
+def test_fetch_toc_survives_bad_retry_after(monkeypatch: pytest.MonkeyPatch, sleeps: list[float]) -> None:
+    fetch = failing_then([http_error(503, retry_after="-1")])
+    monkeypatch.setattr(harvest, "_get", lambda url: {"paginatedToc": TOC} if fetch() else {})
+    assert harvest.fetch_toc(MAP_ID) == TOC
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionResetError("reset"),
+        http.client.RemoteDisconnected("closed"),
+        http.client.IncompleteRead(b""),
+    ],
+)
+def test_retry_covers_dropped_connections(error: Exception, sleeps: list[float]) -> None:
+    assert harvest._retry(failing_then([error, error, error])) == "ok"
+    assert sleeps == [1, 2, 4]
 
 
 def test_harvest_recovers_from_transient_503(
