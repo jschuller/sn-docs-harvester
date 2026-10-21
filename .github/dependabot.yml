@@ -1,0 +1,9 @@
+# Dependabot version updates (homelab-governance supply-chain baseline, 2026-10-20). The script uses only the Python
+# standard library, so the only dependencies are the pinned GitHub Actions (SHA pins with "# vX.Y.Z" comments, which
+# Dependabot keeps up to date). Every update waits out a 7-day cooldown; merging stays the owner's.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
