@@ -396,3 +396,82 @@ def test_fallback_html_to_md(fallback_harvest: ModuleType) -> None:
     assert "Line\nbreak <tag>" in md
     assert "alert" not in md
     assert "color" not in md
+
+
+def test_show_toc_subtree_prints_only_that_subtree(
+    monkeypatch: pytest.MonkeyPatch, sleeps: list[float], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_main(monkeypatch, "--map-id", MAP_ID, "--show-toc", "--subtree", "api") == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "API (api)",
+        "  Endpoints (endpoints)",
+        "    Details (details)",
+    ]
+
+
+def test_show_toc_unknown_subtree_fails_clearly(
+    monkeypatch: pytest.MonkeyPatch, sleeps: list[float], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_main(monkeypatch, "--map-id", MAP_ID, "--show-toc", "--subtree", "nope") == 1
+    captured = capsys.readouterr()
+    assert "subtree nope not found in map MAP1" in captured.err
+    assert "--show-toc" in captured.err
+    assert captured.out == ""
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def test_fallback_html_to_md_keeps_structure_and_decodes_entities_once(
+    fallback_harvest: ModuleType,
+) -> None:
+    """fixtures/fallback_topic.html covers a multi-line heading, nested ordered and bullet lists, an <li><p>
+    item, and entities that must be decoded exactly once (&amp;lt; is the text "&lt;", not a tag)."""
+    md = fallback_harvest.html_to_md((FIXTURES / "fallback_topic.html").read_text(encoding="utf-8"))
+    assert md + "\n" == (FIXTURES / "fallback_topic.md").read_text(encoding="utf-8")
+
+
+def test_fallback_html_to_md_renders_tables_as_markdown(fallback_harvest: ModuleType) -> None:
+    """fixtures/fallback_table.html: header row, multi-paragraph cell, pipe in a cell, short row."""
+    md = fallback_harvest.html_to_md((FIXTURES / "fallback_table.html").read_text(encoding="utf-8"))
+    assert md + "\n" == (FIXTURES / "fallback_table.md").read_text(encoding="utf-8")
+
+
+def test_fallback_html_to_md_keeps_code_blocks_verbatim(fallback_harvest: ModuleType) -> None:
+    """fixtures/fallback_pre.html: blank lines, trailing spaces, entities decoded once, inner markup
+    dropped, and a fence longer than any backtick run in the code."""
+    md = fallback_harvest.html_to_md((FIXTURES / "fallback_pre.html").read_text(encoding="utf-8"))
+    assert md + "\n" == (FIXTURES / "fallback_pre.md").read_text(encoding="utf-8")
+
+
+def test_fallback_mismatched_heading_does_not_swallow_the_page(
+    fallback_harvest: ModuleType,
+) -> None:
+    html = "<h3>Short</h4><p>Body text.</p><h3>Next</h3><p>More.</p>"
+    assert fallback_harvest.html_to_md(html) == "### Short\n\nBody text.\n\n### Next\n\nMore."
+
+
+def test_fallback_table_cell_pipe_entities_stay_escaped(fallback_harvest: ModuleType) -> None:
+    html = "<table><tr><th>Op</th><th>x</th></tr><tr><td>a | b</td><td>a &#124; b &vert; c</td></tr></table>"
+    assert fallback_harvest.html_to_md(html) == "| Op | x |\n| --- | --- |\n| a \\| b | a \\| b \\| c |"
+
+
+def test_fallback_nested_table_is_flattened_into_its_cell(fallback_harvest: ModuleType) -> None:
+    html = (
+        "<table><tr><th>A</th><th>B</th></tr>"
+        "<tr><td><table><tr><td>x</td><td>y &amp;lt;</td></tr><tr><td>z</td></tr></table></td>"
+        "<td>outer2</td></tr><tr><td>r3</td><td>r3b</td></tr></table><p>after</p>"
+    )
+    assert fallback_harvest.html_to_md(html) == (
+        "| A | B |\n| --- | --- |\n| x, y &lt;; z | outer2 |\n| r3 | r3b |\n\nafter"
+    )
+
+
+def test_fallback_pre_in_a_table_cell_is_inline_code(fallback_harvest: ModuleType) -> None:
+    html = "<table><tr><th>Ex</th></tr><tr><td>Run <pre>a &lt;\nb `c`</pre></td></tr></table>"
+    assert fallback_harvest.html_to_md(html) == "| Ex |\n| --- |\n| Run `` a < b `c` `` |"
+
+
+def test_fallback_nul_in_page_text_does_not_crash(fallback_harvest: ModuleType) -> None:
+    html = "<p>bad \x00PRE7\x00 input</p><pre>x</pre>"
+    assert fallback_harvest.html_to_md(html) == "bad PRE7 input\n\n```\nx\n```"
