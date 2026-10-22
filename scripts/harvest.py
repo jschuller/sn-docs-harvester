@@ -19,6 +19,7 @@ Usage:
 import argparse, http.client, json, math, re, sys, time, urllib.error, urllib.request
 from collections.abc import Callable
 from datetime import datetime
+from html import unescape
 from pathlib import Path
 from typing import TypeVar
 
@@ -41,13 +42,45 @@ try:
     _c.ignore_tables = False; _c.unicode_snob = True; _c.skip_internal_links = True
     def html_to_md(html): return _c.handle(html)
 except ImportError:
+    def _list_markers():
+        """A re.sub callback turning <ul>/<ol>/<li> tags into "- " / "1. " item markers. A nested list is
+        indented to its parent item's text, as CommonMark needs to keep it nested."""
+        stack = []  # per open list: [kind, items so far, marker column, current item's text column]
+        def replace(m):
+            closing, tag = m.group(1), m.group(2).lower()
+            if tag in ("ul", "ol"):
+                if not closing:
+                    column = stack[-1][3] if stack else 0
+                    stack.append([tag, 0, column, column])
+                    return "\n\n" if len(stack) == 1 else ""  # a nested list sits inside its parent item
+                if stack: stack.pop()
+                return "" if stack else "\n\n"
+            if closing: return ""
+            if not stack: return "\n- "
+            entry = stack[-1]
+            entry[1] += 1
+            marker = f"{entry[1]}." if entry[0] == "ol" else "-"
+            entry[3] = entry[2] + len(marker) + 1
+            return "\n" + " " * entry[2] + marker + " "
+        return replace
+
     def html_to_md(html):
-        t = re.sub(r"<script[^>]*>[\s\S]*?</script>", "", html)
-        t = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", t)
-        t = re.sub(r"<br\s*/?>", "\n", t); t = re.sub(r"</p>", "\n\n", t)
-        t = re.sub(r"<h([1-6])[^>]*>(.*?)</h\1>", lambda m: "#"*int(m.group(1))+" "+m.group(2)+"\n", t)
+        """Stdlib fallback: headings, paragraphs, line breaks and (nested) lists; other tags are dropped.
+        Entities are decoded once, after the tags are gone, so &amp;lt; stays the text "&lt;"."""
+        t = re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", "", html, flags=re.S | re.I)
+        t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
+        t = re.sub(r"<h([1-6])\b[^>]*>(.*?)</h\1\s*>",
+                   lambda m: "\n\n" + "#" * int(m.group(1)) + " " + " ".join(m.group(2).split()) + "\n\n",
+                   t, flags=re.S | re.I)
+        t = re.sub(r"(<li\b[^>]*>)\s*<p\b[^>]*>", r"\1", t, flags=re.I)  # <li><p>x</p></li> -> one item line
+        t = re.sub(r"</p\s*>\s*(</li\s*>)", r"\1", t, flags=re.I)
+        t = re.sub(r"\s*(</?(?:ul|ol|li)\b[^>]*>)\s*", r"\1", t, flags=re.I)  # source indentation
+        t = re.sub(r"<(/?)(ul|ol|li)\b[^>]*>", _list_markers(), t, flags=re.I)
+        t = re.sub(r"<br\b[^>]*>", "\n", t, flags=re.I)
+        t = re.sub(r"</?p\b[^>]*>", "\n\n", t, flags=re.I)
         t = re.sub(r"<[^>]+>", "", t)
-        for e, c in [("&amp;","&"),("&lt;","<"),("&gt;",">"),("&nbsp;"," ")]: t = t.replace(e, c)
+        t = unescape(t).replace("\xa0", " ")
+        t = re.sub(r"[ \t]+\n", "\n", t)
         return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 def _get(url):

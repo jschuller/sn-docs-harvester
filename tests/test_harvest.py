@@ -417,3 +417,15 @@ def test_show_toc_unknown_subtree_fails_clearly(
     assert "subtree nope not found in map MAP1" in captured.err
     assert "--show-toc" in captured.err
     assert captured.out == ""
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def test_fallback_html_to_md_keeps_structure_and_decodes_entities_once(
+    fallback_harvest: ModuleType,
+) -> None:
+    """fixtures/fallback_topic.html covers a multi-line heading, nested ordered and bullet lists, an <li><p>
+    item, and entities that must be decoded exactly once (&amp;lt; is the text "&lt;", not a tag)."""
+    md = fallback_harvest.html_to_md((FIXTURES / "fallback_topic.html").read_text(encoding="utf-8"))
+    assert md + "\n" == (FIXTURES / "fallback_topic.md").read_text(encoding="utf-8")
