@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
 from datetime import datetime
-from html import unescape
+from html import escape, unescape
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 
@@ -103,32 +103,83 @@ except ImportError:
         fence = "`" * max(3, longest + 1)
         return f"{fence}\n{code}\n{fence}"
 
-    def _cell_text(cell: str) -> str:
-        """One table cell on one line, with its own pipes escaped (entities are decoded later)."""
-        text = " ".join(re.sub(r"<[^>]+>", " ", cell).split())
-        return text.replace("|", "\\|")
+    def _inline_code(code: str) -> str:
+        """Code on one line as a Markdown code span, its fence longer than any backtick run inside."""
+        code = " ".join(code.split())
+        longest = max((len(run) for run in re.findall(r"`+", code)), default=0)
+        fence = "`" * (longest + 1)
+        pad = " " if code.startswith("`") or code.endswith("`") else ""
+        return f"{fence}{pad}{code}{pad}{fence}"
 
-    def _markdown_table(m: re.Match[str]) -> str:
-        """A <table> as a Markdown table, its first row as the header."""
+    def _cell_plain(cell: str) -> str:
+        """A table cell's text on one line, entities decoded; a <pre> in it becomes inline code."""
+        parts = re.split(r"<pre\b[^>]*>(.*?)</pre\s*>", cell, flags=re.DOTALL | re.IGNORECASE)
+        pieces = []
+        for i, part in enumerate(parts):
+            if i % 2:  # the inside of a <pre>
+                code = re.sub(r"<br\b[^>]*>", "\n", part, flags=re.IGNORECASE)
+                pieces.append(_inline_code(unescape(re.sub(r"<[^>]+>", "", code))))
+            else:
+                pieces.append(unescape(re.sub(r"<[^>]+>", " ", part)))
+        return " ".join(" ".join(pieces).split())
+
+    def _cell_text(cell: str) -> str:
+        """A table cell for a Markdown row: decoded once and re-escaped, so the final unescape
+        restores it exactly, with its pipes (even ones written &#124; or &vert;) escaped."""
+        return escape(_cell_plain(cell), quote=False).replace("|", "\\|")
+
+    def _table_rows(body: str) -> list[list[str]]:
+        """Raw HTML of each cell, row by row (rows without cells left out)."""
         rows = []
-        for row in re.findall(r"<tr\b[^>]*>(.*?)</tr\s*>", m.group(1), flags=re.DOTALL | re.IGNORECASE):
+        for row in re.findall(r"<tr\b[^>]*>(.*?)</tr\s*>", body, flags=re.DOTALL | re.IGNORECASE):
             cells = re.findall(r"<t[hd]\b[^>]*>(.*?)</t[hd]\s*>", row, flags=re.DOTALL | re.IGNORECASE)
-            rows.append([_cell_text(c) for c in cells])
-        rows = [r for r in rows if r]
+            if cells:
+                rows.append(cells)
+        return rows
+
+    _INNERMOST_TABLE = re.compile(
+        r"<table\b[^>]*>((?:(?!<table\b).)*?)</table\s*>", flags=re.DOTALL | re.IGNORECASE
+    )
+
+    def _convert_table(m: re.Match[str]) -> str:
+        """An innermost <table>: a Markdown table at the top level, flattened text when nested.
+
+        A nested table is a cell's content, so it becomes that cell's text: cells joined by ", ",
+        rows by "; ", still HTML-escaped for the outer table's cell to decode once."""
+        before = m.string[: m.start()]
+        open_tables = len(re.findall(r"<table\b", before, flags=re.IGNORECASE)) - len(
+            re.findall(r"</table\s*>", before, flags=re.IGNORECASE)
+        )
+        rows = _table_rows(m.group(1))
+        if open_tables > 0:
+            text = "; ".join(", ".join(_cell_plain(c) for c in r) for r in rows)
+            return escape(text, quote=False)
         if not rows:
             return "\n\n"
-        width = max(len(r) for r in rows)
-        rows = [r + [""] * (width - len(r)) for r in rows]
-        lines = ["| " + " | ".join(rows[0]) + " |", "|" + " --- |" * width]
-        lines.extend("| " + " | ".join(r) + " |" for r in rows[1:])
+        cells = [[_cell_text(c) for c in r] for r in rows]
+        width = max(len(r) for r in cells)
+        cells = [r + [""] * (width - len(r)) for r in cells]
+        lines = ["| " + " | ".join(cells[0]) + " |", "|" + " --- |" * width]
+        lines.extend("| " + " | ".join(r) + " |" for r in cells[1:])
         return "\n\n" + "\n".join(lines) + "\n\n"
+
+    def _tables_to_md(t: str) -> str:
+        """Convert tables innermost first, so a nested </table> cannot end its parent early."""
+        while True:
+            converted = _INNERMOST_TABLE.sub(_convert_table, t)
+            if converted == t:
+                return t
+            t = converted
 
     def html_to_md(html: str) -> str:
         """Stdlib fallback: headings, paragraphs, line breaks, (nested) lists, tables and code blocks;
         other tags are dropped. Entities are decoded once, after the tags are gone, so &amp;lt; stays
         the text "&lt;"."""
+        html = html.replace("\x00", "")  # NUL is not page text, and would collide with _PRE_TOKEN
         t = re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", "", html, flags=re.DOTALL | re.IGNORECASE)
         t = re.sub(r"<!--.*?-->", "", t, flags=re.DOTALL)
+        # Tables before code blocks: a <pre> inside a cell becomes inline code there
+        t = _tables_to_md(t)
         # Code blocks first, so no later rewrite touches their whitespace, entities or markup
         blocks: list[str] = []
 
@@ -144,7 +195,6 @@ except ImportError:
             t,
             flags=re.DOTALL | re.IGNORECASE,
         )
-        t = re.sub(r"<table\b[^>]*>(.*?)</table\s*>", _markdown_table, t, flags=re.DOTALL | re.IGNORECASE)
         # <li><p>x</p></li> -> one item line
         t = re.sub(r"(<li\b[^>]*>)\s*<p\b[^>]*>", r"\1", t, flags=re.IGNORECASE)
         t = re.sub(r"</p\s*>\s*(</li\s*>)", r"\1", t, flags=re.IGNORECASE)

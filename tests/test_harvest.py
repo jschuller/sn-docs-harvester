@@ -449,3 +449,29 @@ def test_fallback_mismatched_heading_does_not_swallow_the_page(
 ) -> None:
     html = "<h3>Short</h4><p>Body text.</p><h3>Next</h3><p>More.</p>"
     assert fallback_harvest.html_to_md(html) == "### Short\n\nBody text.\n\n### Next\n\nMore."
+
+
+def test_fallback_table_cell_pipe_entities_stay_escaped(fallback_harvest: ModuleType) -> None:
+    html = "<table><tr><th>Op</th><th>x</th></tr><tr><td>a | b</td><td>a &#124; b &vert; c</td></tr></table>"
+    assert fallback_harvest.html_to_md(html) == "| Op | x |\n| --- | --- |\n| a \\| b | a \\| b \\| c |"
+
+
+def test_fallback_nested_table_is_flattened_into_its_cell(fallback_harvest: ModuleType) -> None:
+    html = (
+        "<table><tr><th>A</th><th>B</th></tr>"
+        "<tr><td><table><tr><td>x</td><td>y &amp;lt;</td></tr><tr><td>z</td></tr></table></td>"
+        "<td>outer2</td></tr><tr><td>r3</td><td>r3b</td></tr></table><p>after</p>"
+    )
+    assert fallback_harvest.html_to_md(html) == (
+        "| A | B |\n| --- | --- |\n| x, y &lt;; z | outer2 |\n| r3 | r3b |\n\nafter"
+    )
+
+
+def test_fallback_pre_in_a_table_cell_is_inline_code(fallback_harvest: ModuleType) -> None:
+    html = "<table><tr><th>Ex</th></tr><tr><td>Run <pre>a &lt;\nb `c`</pre></td></tr></table>"
+    assert fallback_harvest.html_to_md(html) == "| Ex |\n| --- |\n| Run `` a < b `c` `` |"
+
+
+def test_fallback_nul_in_page_text_does_not_crash(fallback_harvest: ModuleType) -> None:
+    html = "<p>bad \x00PRE7\x00 input</p><pre>x</pre>"
+    assert fallback_harvest.html_to_md(html) == "bad PRE7 input\n\n```\nx\n```"
