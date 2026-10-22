@@ -143,6 +143,15 @@ def find_subtree(pages, target_id):
         if found: return found
     return None
 
+def subtree_or_exit(toc, map_id, subtree_id):
+    """The TOC node for subtree_id; exits 1 with a hint if the map has no such contentId."""
+    node = find_subtree(toc, subtree_id)
+    if not node:
+        print(f"ERROR: subtree {subtree_id} not found in map {map_id}; list its contentIds with "
+              f"--map-id {map_id} --show-toc and pass one as --subtree", file=sys.stderr)
+        sys.exit(1)
+    return node
+
 def _missing_marker(cid: str, title: str) -> str:
     """An output line recording a topic that could not be fetched ("--" cannot appear in a comment)."""
     return f"\n<!-- missing: {cid} {re.sub(r'-{2,}', '-', title)} -->\n"
@@ -159,11 +168,7 @@ def harvest(map_id, output_path, subtree_id=None, verbose=False):
     if verbose: print("Fetching TOC...")
     toc = fetch_toc(map_id)
     if subtree_id:
-        node = find_subtree(toc, subtree_id)
-        if not node:
-            print(f"ERROR: subtree {subtree_id} not found in map {map_id}; list its contentIds with "
-                  f"--map-id {map_id} --show-toc and pass one as --subtree", file=sys.stderr)
-            sys.exit(1)
+        node = subtree_or_exit(toc, map_id, subtree_id)
         topics = list(walk_toc([node]))
         map_title = node.get("title", map_title)
         if verbose: print(f"Subtree: {map_title}")
@@ -251,7 +256,7 @@ def main():
             print(f"WARNING: map {args.map_id} is {lang}, not {args.lang}; proceeding", file=sys.stderr)
         if args.show_toc:
             toc = fetch_toc(args.map_id)
-            tree = [find_subtree(toc, args.subtree)] if args.subtree else toc
+            tree = [subtree_or_exit(toc, args.map_id, args.subtree)] if args.subtree else toc
             for cid, title, depth in walk_toc(tree):
                 print(f"{'  '*depth}{title} ({cid})")
             return

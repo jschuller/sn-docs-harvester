@@ -396,3 +396,24 @@ def test_fallback_html_to_md(fallback_harvest: ModuleType) -> None:
     assert "Line\nbreak <tag>" in md
     assert "alert" not in md
     assert "color" not in md
+
+
+def test_show_toc_subtree_prints_only_that_subtree(
+    monkeypatch: pytest.MonkeyPatch, sleeps: list[float], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_main(monkeypatch, "--map-id", MAP_ID, "--show-toc", "--subtree", "api") == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "API (api)",
+        "  Endpoints (endpoints)",
+        "    Details (details)",
+    ]
+
+
+def test_show_toc_unknown_subtree_fails_clearly(
+    monkeypatch: pytest.MonkeyPatch, sleeps: list[float], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_main(monkeypatch, "--map-id", MAP_ID, "--show-toc", "--subtree", "nope") == 1
+    captured = capsys.readouterr()
+    assert "subtree nope not found in map MAP1" in captured.err
+    assert "--show-toc" in captured.err
+    assert captured.out == ""
