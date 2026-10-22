@@ -91,17 +91,60 @@ except ImportError:
 
         return replace
 
+    _PRE_TOKEN = "\x00PRE{}\x00"  # holds a code block's place; survives every rewrite below
+
+    def _code_block(inner: str) -> str:
+        """The text of a <pre> element as a fenced block: markup dropped, entities decoded once,
+        whitespace and blank lines kept exactly."""
+        code = re.sub(r"<br\b[^>]*>", "\n", inner, flags=re.IGNORECASE)
+        code = unescape(re.sub(r"<[^>]+>", "", code))
+        code = code.removeprefix("\r\n").removeprefix("\n").rstrip("\n")  # HTML drops a leading newline
+        longest = max((len(run) for run in re.findall(r"`+", code)), default=0)
+        fence = "`" * max(3, longest + 1)
+        return f"{fence}\n{code}\n{fence}"
+
+    def _cell_text(cell: str) -> str:
+        """One table cell on one line, with its own pipes escaped (entities are decoded later)."""
+        text = " ".join(re.sub(r"<[^>]+>", " ", cell).split())
+        return text.replace("|", "\\|")
+
+    def _markdown_table(m: re.Match[str]) -> str:
+        """A <table> as a Markdown table, its first row as the header."""
+        rows = []
+        for row in re.findall(r"<tr\b[^>]*>(.*?)</tr\s*>", m.group(1), flags=re.DOTALL | re.IGNORECASE):
+            cells = re.findall(r"<t[hd]\b[^>]*>(.*?)</t[hd]\s*>", row, flags=re.DOTALL | re.IGNORECASE)
+            rows.append([_cell_text(c) for c in cells])
+        rows = [r for r in rows if r]
+        if not rows:
+            return "\n\n"
+        width = max(len(r) for r in rows)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        lines = ["| " + " | ".join(rows[0]) + " |", "|" + " --- |" * width]
+        lines.extend("| " + " | ".join(r) + " |" for r in rows[1:])
+        return "\n\n" + "\n".join(lines) + "\n\n"
+
     def html_to_md(html: str) -> str:
-        """Stdlib fallback: headings, paragraphs, line breaks and (nested) lists; other tags are dropped.
-        Entities are decoded once, after the tags are gone, so &amp;lt; stays the text "&lt;"."""
+        """Stdlib fallback: headings, paragraphs, line breaks, (nested) lists, tables and code blocks;
+        other tags are dropped. Entities are decoded once, after the tags are gone, so &amp;lt; stays
+        the text "&lt;"."""
         t = re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", "", html, flags=re.DOTALL | re.IGNORECASE)
         t = re.sub(r"<!--.*?-->", "", t, flags=re.DOTALL)
+        # Code blocks first, so no later rewrite touches their whitespace, entities or markup
+        blocks: list[str] = []
+
+        def hold_code(m: re.Match[str]) -> str:
+            blocks.append(_code_block(m.group(1)))
+            return "\n\n" + _PRE_TOKEN.format(len(blocks) - 1) + "\n\n"
+
+        t = re.sub(r"<pre\b[^>]*>(.*?)</pre\s*>", hold_code, t, flags=re.DOTALL | re.IGNORECASE)
+        # A heading ends at the next heading tag of any level, so <h3>x</h4> cannot swallow the page
         t = re.sub(
-            r"<h([1-6])\b[^>]*>(.*?)</h\1\s*>",
+            r"<h([1-6])\b[^>]*>((?:(?!</?h[1-6]\b).)*?)</h[1-6]\s*>",
             lambda m: "\n\n" + "#" * int(m.group(1)) + " " + " ".join(m.group(2).split()) + "\n\n",
             t,
             flags=re.DOTALL | re.IGNORECASE,
         )
+        t = re.sub(r"<table\b[^>]*>(.*?)</table\s*>", _markdown_table, t, flags=re.DOTALL | re.IGNORECASE)
         # <li><p>x</p></li> -> one item line
         t = re.sub(r"(<li\b[^>]*>)\s*<p\b[^>]*>", r"\1", t, flags=re.IGNORECASE)
         t = re.sub(r"</p\s*>\s*(</li\s*>)", r"\1", t, flags=re.IGNORECASE)
@@ -113,7 +156,8 @@ except ImportError:
         t = re.sub(r"<[^>]+>", "", t)
         t = unescape(t).replace("\xa0", " ")
         t = re.sub(r"[ \t]+\n", "\n", t)
-        return re.sub(r"\n{3,}", "\n\n", t).strip()
+        t = re.sub(r"\n{3,}", "\n\n", t).strip()
+        return re.sub(r"\x00PRE(\d+)\x00", lambda m: blocks[int(m.group(1))], t)
 
 
 def _get(url: str) -> Any:  # parsed JSON of any shape

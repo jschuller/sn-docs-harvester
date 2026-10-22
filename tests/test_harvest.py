@@ -429,3 +429,23 @@ def test_fallback_html_to_md_keeps_structure_and_decodes_entities_once(
     item, and entities that must be decoded exactly once (&amp;lt; is the text "&lt;", not a tag)."""
     md = fallback_harvest.html_to_md((FIXTURES / "fallback_topic.html").read_text(encoding="utf-8"))
     assert md + "\n" == (FIXTURES / "fallback_topic.md").read_text(encoding="utf-8")
+
+
+def test_fallback_html_to_md_renders_tables_as_markdown(fallback_harvest: ModuleType) -> None:
+    """fixtures/fallback_table.html: header row, multi-paragraph cell, pipe in a cell, short row."""
+    md = fallback_harvest.html_to_md((FIXTURES / "fallback_table.html").read_text(encoding="utf-8"))
+    assert md + "\n" == (FIXTURES / "fallback_table.md").read_text(encoding="utf-8")
+
+
+def test_fallback_html_to_md_keeps_code_blocks_verbatim(fallback_harvest: ModuleType) -> None:
+    """fixtures/fallback_pre.html: blank lines, trailing spaces, entities decoded once, inner markup
+    dropped, and a fence longer than any backtick run in the code."""
+    md = fallback_harvest.html_to_md((FIXTURES / "fallback_pre.html").read_text(encoding="utf-8"))
+    assert md + "\n" == (FIXTURES / "fallback_pre.md").read_text(encoding="utf-8")
+
+
+def test_fallback_mismatched_heading_does_not_swallow_the_page(
+    fallback_harvest: ModuleType,
+) -> None:
+    html = "<h3>Short</h4><p>Body text.</p><h3>Next</h3><p>More.</p>"
+    assert fallback_harvest.html_to_md(html) == "### Short\n\nBody text.\n\n### Next\n\nMore."
