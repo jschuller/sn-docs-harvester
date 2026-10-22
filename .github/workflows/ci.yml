@@ -29,8 +29,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install pytest==8.4.2 ruff==0.16.10
       - run: python -m pytest -q tests
-      # scripts/harvest.py keeps its compact one-line style, so only the tests are linted
-      - run: ruff check tests
+      - run: ruff check scripts tests
 
   zizmor:
     # security audit of the workflows and dependabot.yml (config: .github/zizmor.yml). The action runs zizmor's container
